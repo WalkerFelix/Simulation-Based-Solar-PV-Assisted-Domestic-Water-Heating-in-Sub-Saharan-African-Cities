@@ -66,8 +66,8 @@ def _seasonal_energy_and_litres(
     
     """
     Convert 1-minute L/min to two aligned 5-min series:
-    - litres_per_step (L/5min)  = sum over each 5-minute bin
     - energy_kwh (kWh/5min)     = litres * 4184 * dT / 3.6e6
+    - litres_per_step (L/5min)  = sum over each 5-minute bin
     """
 
     dT = float(setpoint_C) - float(cold_C)
@@ -185,17 +185,6 @@ def simulate_household_efficient(
     
     """
         Simulates one household EWH with PV-assisted controller.
-
-        Control and dispatch:
-        - When the Thermostat is ON, the heater requests up to element_rating_kw.
-        - Source selection: controller selects PV mode or grid mode per timestep.
-        - PV mode: heating power is from PV only and limited by available PV power
-        - Grid mode: heating power is supplied from the grid
-        - PV and grid power are not combined simultaneously.
-
-        Comfort metric:
-        - Cold draws are counted as draw events with total volume >= cold_event_min_volume_L.
-        - An event is cold if outlet proxy temperature is below cold_event_temperature.
     """
     
     try:
@@ -286,9 +275,12 @@ def simulate_household_efficient(
         curs_e = {s: 0 for s in tiled_energy}
         curs_L = {s: 0 for s in tiled_litres}
         demand_energy = _np.zeros(len(idx), float)
+        demand_litres = _np.zeros(len(idx), float)
         
         for (y, m), pos in month_slots.items():
             season = season_by_month[m]
+            
+            # Energy stitching
             seq_e = tiled_energy[season]; cur_e = curs_e[season]
             need = len(pos)
             if cur_e + need <= seq_e.size:
@@ -299,9 +291,19 @@ def simulate_household_efficient(
             demand_energy[_np.array(pos, int)] = take_e
             curs_e[season] = cur_e
 
-        draw_kwh = pd.Series(demand_energy, index=idx, dtype=float)
-        demand_kwh_sum = float(draw_kwh.sum())
+            # Litres stitching
+            seq_L = tiled_litres[season]; cur_L = curs_L[season]
+            if cur_L + need <= seq_L.size:
+                take_L = seq_L[cur_L:cur_L+need]; cur_L += need
+            else:
+                r = (cur_L + need) - seq_L.size
+                take_L = _np.concatenate([seq_L[cur_L:], seq_L[:r]]); cur_L = r
+            demand_litres[_np.array(pos, int)] = take_L
+            curs_L[season] = cur_L
 
+        draw_kwh = pd.Series(demand_energy, index=idx, dtype=float)
+        draw_litres = pd.Series(demand_litres, index=idx, dtype=float)
+        demand_kwh_sum = float(draw_kwh.sum())
 
         # PV system init
         try:
@@ -320,10 +322,19 @@ def simulate_household_efficient(
             if col not in irr_df.columns:
                 return _fail(household_id, f"Missing irradiance column: {col}")
 
-        irr_aligned = irr_df
-        pv_kw = pv.get_power(irr_aligned).clip(lower=0.0).astype(float).to_numpy()
-        on_steps_total = 0
 
+        # 1. Widerstand berechnen (R = V^2 / P)
+        p_rated_kw = float(TANK_PARAMS['element_rating_kw'])
+        v_rated_v  = float(TANK_PARAMS.get('element_voltage_v', 230.0))
+        R_elem = (v_rated_v**2) / (p_rated_kw * 1000.0)
+
+        if DIAG_PRINTS:
+            print(f"[{household_id}] Resistive Element: {p_rated_kw}kW @ {v_rated_v}V -> R = {R_elem:.2f} Ohm")
+
+
+        irr_aligned = irr_df
+        pv_kw = pv.get_power_resistive(irr_aligned, R_elem).clip(lower=0.0).astype(float).to_numpy()
+        on_steps_total = 0
 
         # Tank init & constants
         PV_START = time(5, 30)   # 05:30
@@ -382,6 +393,7 @@ def simulate_household_efficient(
 
         # simulation loop
         draw_vals = draw_kwh.to_numpy(float)
+        litres_vals = draw_litres.to_numpy(float)
 
         if 'temp_air' in irr_aligned.columns:
             amb_vals = irr_aligned['temp_air'].to_numpy(float)
@@ -407,6 +419,7 @@ def simulate_household_efficient(
         for i, ts in enumerate(idx):
             p_pv_kw   = float(pv_kw[i])
             demand_kwh = float(draw_vals[i])
+            v_draw     = float(litres_vals[i])
             t_amb = float(ambient_override) if ambient_override is not None else float(amb_vals[i])
             current_inlet_temp = float(mains_temp_vals[i])
 
@@ -443,7 +456,8 @@ def simulate_household_efficient(
                 p_grid = 0.0
 
             T_out_before = tank.top_temp
-            top_T, bot_T = tank.step(p_grid + p_pv_used, demand_kwh, t_amb, current_inlet_temp, setpoint)
+            # Pass v_draw (Liters) instead of demand_kwh
+            top_T, bot_T = tank.step(p_grid + p_pv_used, v_draw, t_amb, current_inlet_temp, setpoint)
             tank.top_temp = float(top_T)
             tank.bottom_temp = float(bot_T)
 
@@ -460,7 +474,8 @@ def simulate_household_efficient(
             p_grid_baseline = float(p_target) if heater_on_baseline else 0.0
             T_out_before_baseline = tank_baseline.top_temp
             
-            top_T_b, bot_T_b = tank_baseline.step(p_grid_baseline, demand_kwh, t_amb, current_inlet_temp, setpoint)
+            # Pass v_draw (Liters) instead of demand_kwh
+            top_T_b, bot_T_b = tank_baseline.step(p_grid_baseline, v_draw, t_amb, current_inlet_temp, setpoint)
             tank_baseline.top_temp = float(top_T_b)
             tank_baseline.bottom_temp = float(bot_T_b)
 
@@ -478,24 +493,24 @@ def simulate_household_efficient(
             grid_used_when_needed_kwh  += step_grid_kwh
             pv_generated_kwh_sum += p_pv_kw * dt_h
 
-            # Volume calculation
+            # Volume calculation Update
             T_use = 40.0 
-            dT_ref = max(1e-6, setpoint - current_inlet_temp)
-            vol_ref_L = demand_kwh * 3_600_000.0 / (float(TANK_PARAMS["c"]) * dT_ref)
-
+            
             if T_out_before > current_inlet_temp:
-                if T_out_before > T_use:
-                    actual_step_vol = vol_ref_L * (T_use - current_inlet_temp) / (T_out_before - current_inlet_temp)
+                if T_out_before >= T_use:
+                    # User gets the exact requested volume
+                    actual_step_vol = v_draw
                 else:
-                    actual_step_vol = vol_ref_L
+                    # Tank is colder than 40C, user gets a lower effective volume of "hot" water
+                    actual_step_vol = v_draw * (T_out_before - current_inlet_temp) / (T_use - current_inlet_temp)
             else:
                 actual_step_vol = 0.0
             
             actual_volumes_L[i] = actual_step_vol
 
             # Comfort (for Both tnaks)
-            dT = max(1e-6, setpoint - inlet_temp) 
-            step_volume_L = demand_kwh * 3_600_000.0 / (float(TANK_PARAMS["c"]) * dT)
+            # The event logic now simply operates on the demanded volume v_draw
+            step_volume_L = v_draw
 
             cold_thr_C = float(TANK_PARAMS.get("cold_event_temperature", 40.0))
             min_event_vol_L = float(TANK_PARAMS.get("cold_event_min_volume_L", 2.0))

@@ -252,14 +252,27 @@ def load_irradiance_all(path_or_dir: str) -> pd.DataFrame:
 
     return irr
 
+'''
+# Wenn alle 25 Profile einzeln betrachtet werden sollen
 def list_profile_files(category: str) -> List[str]:
-    
-    """Return sorted list of CSV files for given demand category."""
-    
+    """Return sorted list of CSV files for the given demand category."""
     p = os.path.join(USER_DATA_DIR, category)
     files = sorted(glob(os.path.join(p, "*.csv")))
     if not files:
         print(f"  ⚠ No profiles found in {p}")
+    return files
+
+'''
+# Zum schnellen berechnen der Solarzellenausrichtung
+from config import MEDIAN_DATA_DIR # Stelle sicher, dass dies importiert ist
+
+def list_profile_files(category: str) -> List[str]:
+    """Gibt nur die Dateien aus dem Mittelwert-Ordner zurück."""
+    # Pfad zu den Mittelwert-Profilen statt zu den klassifizierten Einzelprofilen
+    p = os.path.join(MEDIAN_DATA_DIR) 
+    files = sorted(glob(os.path.join(p, f"*{category}*.csv"))) # Filtert nach Kategorie im Dateinamen
+    if not files:
+        print(f"  ⚠ Keine Mittelwert-Profile gefunden in {p}")
     return files
 
 

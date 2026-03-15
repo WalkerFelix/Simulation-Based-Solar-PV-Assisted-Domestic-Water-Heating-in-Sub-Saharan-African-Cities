@@ -8,6 +8,15 @@ USER_DATA_DIR  = os.path.join(ROOT_DIR, "user_data", "Classified_Profiles")
 
 
 
+
+
+MEDIAN_DATA_DIR = os.path.join(ROOT_DIR, "user_data", "Mittelwert_Profile") 
+SELECTED_PROFILES = ['Light', 'Medium', 'Heavy']
+
+
+
+
+
 # Simulation knobs
 SELECTED_PROFILES = ['Light', 'Medium', 'Heavy'] 
 SELECTED_LOCATIONS  = ["CapeTown", "Johannesburg", "Lusaka", "Luanda", "Kinshasa", "Nairobi", "Lagos"]          
@@ -62,7 +71,7 @@ def get_irradiance_path(city: str) -> str:
     for p in candidates:
         if os.path.exists(p):
             return p
-
+'''
     # Fallback: any CSV in subfolder
     hits = glob(os.path.join(base, "*.csv"))
     if hits:
@@ -74,7 +83,8 @@ def get_irradiance_path(city: str) -> str:
         f"Expected one of:\n  - {candidates[0]}\n  - {candidates[1]}\n"
         f"No CSVs found in folder: {base}"
     )
-
+'''
+    
 def get_system_params(city: str) -> dict:
 
     """Return a location PV system parameter dictionary."""
@@ -113,6 +123,7 @@ TANK_PARAMS = {
     "rho": 1000,                  # kg/m³
     "R_th": 2.5,                  # K/W
     "element_rating_kw": 3.0,     # kW
+    "element_voltage_v": 230.0,   # V
     "dt_s": 300,                  # 5-min step
     "cold_event_temperature": 40,    # °C (threshold for a cold event)
     "cold_event_min_volume_L": 2.0,  # L (minimum total volume per event)
@@ -130,7 +141,7 @@ PERMANENT_LOAD_TEST = False   # set True to force element ON every step
 DIAG_PRINTS = False            # set False to silence the prints
 
 # Runsweep
-RUN_SWEEP = False #True  # set to False/True to skip/run
+RUN_SWEEP = True #True  # set to False/True to skip/run
 
 # Demand synthesis from seasonal month blocks
 DEMAND_REPEAT_PER_SEASON = 3      # always 3 months per season

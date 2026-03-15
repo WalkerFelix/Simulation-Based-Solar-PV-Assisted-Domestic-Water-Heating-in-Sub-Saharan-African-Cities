@@ -54,20 +54,21 @@ class StratifiedTank:
         self.top_temp = float(T0)
         self.bottom_temp = float(T0)
 
-    def step(self, power_kw: float, draw_kwh: float, T_amb: float, T_inlet: float, T_setpoint: float):
+    def step(self, power_kw: float, draw_volume_l: float, T_amb: float, T_inlet: float, T_setpoint: float):
         """
-        Advance the tank state by one timestep with mixing valve logic.
+        Advance the tank state by one timestep with dynamic mixing valve logic.
 
         Args:
             power_kw: Heating power applied to the element (kW).
-            draw_kwh: Energy demand if delivered at T_setpoint (reference from profile).
+            draw_volume_l: Volume of water demanded at the tap at T_use (Liters).
             T_amb: Ambient temperature (degC).
-            T_inlet: Mains inlet water temperature (degC).
+            T_inlet: Dynamic mains inlet water temperature (degC).
             T_setpoint: Original thermostat setpoint temperature (degC).
         """
         power_kw = float(power_kw)
-        draw_kwh = float(draw_kwh)
+        draw_volume_l = float(draw_volume_l)
         T_amb = float(T_amb)
+        T_in = float(T_inlet)
         
         # 1) Calculate internal energy changes (Heating and Losses)
         Q_in = power_kw * 1000 * self.dt  # J
@@ -75,7 +76,6 @@ class StratifiedTank:
         # Calculate UA (Conductance) per node.
         # R_th is the total resistance of the whole tank. UA_total = 1 / R_th.
         # Assuming the tank is split 50/50, each node has roughly half the surface area.
-        # UA_node approx UA_total / 2.
         UA_total_ref = 1.0 / self.R_th_ref
         UA_node_ref  = UA_total_ref / 2.0
 
@@ -98,21 +98,23 @@ class StratifiedTank:
         E_bot = self.mass_bot * self.c * self.bottom_temp + Q_heat_bot - Q_loss_bot
         
         # 2) Mixing Valve/Draw Logic 
-        # T_use is the target temperature at the tap 40°C
         T_use = 40.0 
         T_out = float(self.top_temp)
-        E_draw_ref = float(draw_kwh) * 3_600_000.0  
 
-        # Calculate actual energy to be removed from the tank
-        if T_out > T_inlet:
-            if T_out > T_use:
-                # Mixing logic: energy removal is scaled to T_use instead of T_out
-                mixing_factor = (T_use - T_inlet) / (T_out - T_inlet)
-                E_remove = E_draw_ref * mixing_factor
+        # Mass of the drawn water in kg (assuming 1L = approx 1kg based on rho)
+        m_draw = draw_volume_l * (self.rho / 1000.0)
+
+        # Calculate actual energy to be removed from the tank based on dynamic T_inlet
+        if T_out > T_in:
+            if T_out >= T_use:
+                # Mixing mode: We only remove the energy needed to heat m_draw from T_in to T_use.
+                # The physical volume pulled from the tank will be less than draw_volume_l
+                # due to mixing with cold water at T_in at the valve.
+                E_remove = m_draw * self.c * (T_use - T_in)
             else:
-                # Tank is cooler than T_use: scale energy removal by available T_out
-                efficiency_factor = (T_out - T_inlet) / (float(T_setpoint) - T_inlet)
-                E_remove = E_draw_ref * efficiency_factor
+                # Tank is cooler than T_use: Valve is fully open to hot side.
+                # User gets T_out instead of T_use.
+                E_remove = m_draw * self.c * (T_out - T_in)
         else:
             E_remove = 0.0
 
